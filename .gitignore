@@ -1,0 +1,13 @@
+.gradle/
+build/
+out/
+.idea/
+.vscode/
+*.iml
+.DS_Store
+bin/
+
+# Runtime local data
+.data/
+*.log
+hs_err_pid*

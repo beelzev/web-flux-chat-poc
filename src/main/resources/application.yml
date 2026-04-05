@@ -1,0 +1,15 @@
+spring:
+  application:
+    name: chat-poc
+  r2dbc:
+    url: ${SPRING_R2DBC_URL:r2dbc:h2:file:///${user.home}/chat-poc/chatdb;DB_CLOSE_DELAY=-1}
+    username: ${SPRING_R2DBC_USERNAME:sa}
+    password: ${SPRING_R2DBC_PASSWORD:}
+  codec:
+    max-in-memory-size: 1MB
+
+server:
+  port: ${SERVER_PORT:8080}
+  reactive:
+    session:
+      timeout: 8h

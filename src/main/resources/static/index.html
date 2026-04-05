@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>WebFlux Chat PoC</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --text: #1f2937;
+      --accent: #0b6e4f;
+      --border: #d1d5db;
+    }
+    body {
+      margin: 0;
+      font-family: "Pretendard", "Noto Sans KR", sans-serif;
+      background: radial-gradient(circle at top left, #ecfeff, var(--bg));
+      color: var(--text);
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 16px;
+      box-sizing: border-box;
+    }
+    .card {
+      width: min(920px, 100%);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.08);
+      overflow: hidden;
+    }
+    .hidden { display: none; }
+    .auth {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 12px;
+      padding: 16px;
+    }
+    .panel { border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+    input, button {
+      width: 100%;
+      margin-top: 8px;
+      padding: 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      box-sizing: border-box;
+      font-size: 14px;
+    }
+    button {
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+      border: none;
+      font-weight: 600;
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      background: #f9fafb;
+    }
+    .messages {
+      height: 420px;
+      overflow: auto;
+      padding: 12px;
+      background: #fcfcfc;
+    }
+    .msg {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 10px;
+      margin-bottom: 8px;
+      background: #fff;
+    }
+    .meta { font-size: 12px; color: #6b7280; }
+    .composer {
+      display: flex;
+      gap: 8px;
+      padding: 12px;
+      border-top: 1px solid var(--border);
+    }
+    .composer input { margin: 0; }
+    .composer button { width: 120px; margin: 0; }
+    .error { color: #b91c1c; min-height: 20px; padding: 0 12px 12px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div id="authSection" class="auth">
+      <section class="panel">
+        <h3>회원가입</h3>
+        <input id="signupId" placeholder="ID (3-50자)">
+        <input id="signupPw" type="password" placeholder="PW (4자 이상)">
+        <button id="signupBtn">가입하고 입장</button>
+      </section>
+      <section class="panel">
+        <h3>로그인</h3>
+        <input id="loginId" placeholder="ID">
+        <input id="loginPw" type="password" placeholder="PW">
+        <button id="loginBtn">로그인</button>
+      </section>
+    </div>
+
+    <div id="chatSection" class="hidden">
+      <div class="topbar">
+        <div><strong id="meLabel"></strong> 님 접속중</div>
+        <button id="logoutBtn" style="width:auto;padding:8px 14px;">로그아웃</button>
+      </div>
+      <div id="messages" class="messages"></div>
+      <div class="composer">
+        <input id="messageInput" maxlength="500" placeholder="메시지 입력 (최대 500자)">
+        <button id="sendBtn">전송</button>
+      </div>
+      <div id="errorBox" class="error"></div>
+    </div>
+  </div>
+
+  <script>
+    const authSection = document.getElementById('authSection');
+    const chatSection = document.getElementById('chatSection');
+    const meLabel = document.getElementById('meLabel');
+    const errorBox = document.getElementById('errorBox');
+    const messages = document.getElementById('messages');
+    const messageInput = document.getElementById('messageInput');
+    const streamMessageMap = new Map();
+    let ws = null;
+
+    async function callJson(url, method, body) {
+      const res = await fetch(url, {
+        method: method,
+        headers: { 'Content-Type': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined,
+        credentials: 'same-origin'
+      });
+      let data = {};
+      try {
+        data = await res.json();
+      } catch (e) {
+        data = {};
+      }
+      if (res.ok === false) {
+        throw new Error(data.error || ('요청 실패: ' + res.status));
+      }
+      return data;
+    }
+
+    function showError(message) {
+      errorBox.textContent = message || '';
+    }
+
+    function appendMessage(item) {
+      const streamId = typeof item.streamId === 'string' ? item.streamId : '';
+      const shouldAppend = streamId.length > 0;
+      const time = new Date(item.sentAt).toLocaleTimeString();
+
+      if (shouldAppend && streamMessageMap.has(streamId)) {
+        const textEl = streamMessageMap.get(streamId);
+        textEl.textContent = item.content;
+        messages.scrollTop = messages.scrollHeight;
+        return;
+      }
+
+      const box = document.createElement('div');
+      box.className = 'msg';
+
+      const senderEl = document.createElement('div');
+      const senderStrong = document.createElement('strong');
+      senderStrong.textContent = item.senderId;
+      senderEl.appendChild(senderStrong);
+
+      const textEl = document.createElement('div');
+      textEl.textContent = item.content;
+
+      const metaEl = document.createElement('div');
+      metaEl.className = 'meta';
+      metaEl.textContent = time;
+
+      box.appendChild(senderEl);
+      box.appendChild(textEl);
+      box.appendChild(metaEl);
+      messages.appendChild(box);
+
+      if (shouldAppend) {
+        streamMessageMap.set(streamId, textEl);
+      }
+
+      messages.scrollTop = messages.scrollHeight;
+    }
+
+    function escapeHtml(text) {
+      return text
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
+
+    function connectWs() {
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(protocol + '//' + location.host + '/ws/chat');
+      ws.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload.senderId && payload.content && payload.sentAt) {
+            appendMessage(payload);
+          }
+        } catch (e) {
+          showError('메시지 파싱 오류');
+        }
+      };
+      ws.onclose = () => {
+        showError('채팅 연결이 종료되었습니다. 다시 로그인해 주세요.');
+      };
+    }
+
+    async function refreshSession() {
+      try {
+        const me = await callJson('/me', 'GET');
+        authSection.classList.add('hidden');
+        chatSection.classList.remove('hidden');
+        meLabel.textContent = me.userId;
+        showError('');
+        if (ws === null || ws.readyState > 1) {
+          connectWs();
+        }
+      } catch (e) {
+        authSection.classList.remove('hidden');
+        chatSection.classList.add('hidden');
+      }
+    }
+
+    document.getElementById('signupBtn').onclick = async () => {
+      try {
+        await callJson('/signup', 'POST', {
+          userId: document.getElementById('signupId').value,
+          password: document.getElementById('signupPw').value
+        });
+        await refreshSession();
+      } catch (e) {
+        showError(e.message);
+      }
+    };
+
+    document.getElementById('loginBtn').onclick = async () => {
+      try {
+        await callJson('/login', 'POST', {
+          userId: document.getElementById('loginId').value,
+          password: document.getElementById('loginPw').value
+        });
+        await refreshSession();
+      } catch (e) {
+        showError(e.message);
+      }
+    };
+
+    document.getElementById('logoutBtn').onclick = async () => {
+      try {
+        await fetch('/logout', { method: 'POST', credentials: 'same-origin' });
+      } finally {
+        if (ws) {
+          ws.close();
+          ws = null;
+        }
+        messages.innerHTML = '';
+        streamMessageMap.clear();
+        await refreshSession();
+      }
+    };
+
+    async function sendMessage() {
+      const content = messageInput.value.trim();
+      if (content.length === 0) {
+        showError('빈 메시지는 전송할 수 없습니다.');
+        return;
+      }
+      if (content.length > 500) {
+        showError('메시지는 500자를 넘길 수 없습니다.');
+        return;
+      }
+      if (ws === null || ws.readyState !== 1) {
+        showError('채팅 연결이 준비되지 않았습니다.');
+        return;
+      }
+      ws.send(JSON.stringify({ content: content }));
+      messageInput.value = '';
+      showError('');
+    }
+
+    document.getElementById('sendBtn').onclick = sendMessage;
+    messageInput.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') {
+        sendMessage();
+      }
+    });
+
+    refreshSession();
+  </script>
+</body>
+</html>
